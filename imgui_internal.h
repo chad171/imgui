@@ -138,6 +138,7 @@ struct ImGuiInputTextDeactivateData;// Short term storage to backup text of a de
 struct ImGuiLastItemData;           // Status storage for last submitted items
 struct ImGuiLocEntry;               // A localization entry.
 struct ImGuiMenuColumns;            // Simple column measurement, currently used for MenuItem() only
+struct ImGuiMultiSelectTempData;    // Multi-selection temporary state (while traversing).
 struct ImGuiNavItemData;            // Result of a gamepad/keyboard directional navigation move query result
 struct ImGuiMetricsConfig;          // Storage for ShowMetricsWindow() and DebugNodeXXX() functions
 struct ImGuiNextWindowData;         // Storage for SetNextWindow** functions
@@ -1190,19 +1191,21 @@ struct ImGuiNextWindowData
 
 enum ImGuiNextItemDataFlags_
 {
-    ImGuiNextItemDataFlags_None     = 0,
-    ImGuiNextItemDataFlags_HasWidth = 1 << 0,
-    ImGuiNextItemDataFlags_HasOpen  = 1 << 1,
+    ImGuiNextItemDataFlags_None             = 0,
+    ImGuiNextItemDataFlags_HasWidth         = 1 << 0,
+    ImGuiNextItemDataFlags_HasOpen          = 1 << 1,
+    ImGuiNextItemDataFlags_HasSelectionData = 1 << 2,
 };
 
 struct ImGuiNextItemData
 {
     ImGuiNextItemDataFlags      Flags;
-    ImGuiItemFlags              ItemFlags;      // Currently only tested/used for ImGuiItemflags_AllowOverlap.
-    float                       Width;          // Set by SetNextItemWidth()
-    ImGuiID                     FocusScopeId;   // Set by SetNextItemMultiSelectData() (!= 0 signify value has been set, so it's an alternate version of HasSelectionData, we don't use Flags for this because they are cleared too early. This is mostly used for debugging)
+    ImGuiItemFlags              ItemFlags;              // Currently only tested/used for ImGuiItemflags_AllowOverlap.
+    float                       Width;                  // Set by SetNextItemWidth()
+    ImGuiID                     FocusScopeId;           // Set by SetNextItemMultiSelectData() (!= 0 signify value has been set, so it's an alternate version of HasSelectionData, we don't use Flags for this because they are cleared too early. This is mostly used for debugging)
     ImGuiCond                   OpenCond;
-    bool                        OpenVal;        // Set by SetNextItemOpen()
+    bool                        OpenVal;                // Set by SetNextItemOpen()
+    void*                       SelectionData;          // Set by SetNextItemSelectionData() (note that NULL/0 is a valid value)
 
     ImGuiNextItemData()         { memset(this, 0, sizeof(*this)); }
     inline void ClearFlags()    { Flags = ImGuiNextItemDataFlags_None; ItemFlags = ImGuiItemFlags_None; } // Also cleared manually by ItemAdd()!
@@ -1514,10 +1517,11 @@ enum ImGuiNavMoveFlags_
     ImGuiNavMoveFlags_Forwarded             = 1 << 7,
     ImGuiNavMoveFlags_DebugNoResult         = 1 << 8,   // Dummy scoring for debug purpose, don't apply result
     ImGuiNavMoveFlags_FocusApi              = 1 << 9,   // Requests from focus API can land/focus/activate items even if they are marked with _NoTabStop (see NavProcessItemForTabbingRequest() for details)
-    ImGuiNavMoveFlags_Tabbing               = 1 << 10,  // == Focus + Activate if item is Inputable + DontChangeNavHighlight
-    ImGuiNavMoveFlags_Activate              = 1 << 11,  // Activate/select target item.
-    ImGuiNavMoveFlags_NoSelect              = 1 << 12,  // Don't trigger selection by not setting g.NavJustMovedTo
-    ImGuiNavMoveFlags_NoSetNavHighlight     = 1 << 13,  // Do not alter the visible state of keyboard vs mouse nav highlight
+    ImGuiNavMoveFlags_IsTabbing             = 1 << 10,  // == Focus + Activate if item is Inputable + DontChangeNavHighlight
+    ImGuiNavMoveFlags_IsPageMove            = 1 << 11,  // Identify a PageDown/PageUp request.
+    ImGuiNavMoveFlags_Activate              = 1 << 12,  // Activate/select target item.
+    ImGuiNavMoveFlags_NoSelect              = 1 << 13,  // Don't trigger selection by not setting g.NavJustMovedTo
+    ImGuiNavMoveFlags_NoSetNavHighlight     = 1 << 14,  // Do not alter the visible state of keyboard vs mouse nav highlight
 };
 
 enum ImGuiNavLayer
@@ -1537,9 +1541,10 @@ struct ImGuiNavItemData
     float               DistBox;        //      Move    // Best candidate box distance to current NavId
     float               DistCenter;     //      Move    // Best candidate center distance to current NavId
     float               DistAxial;      //      Move    // Best candidate axial distance to current NavId
+    bool                HasSelectionData;//Init,Move    // Copy of (NextItemData.Flags & ImGuiNextItemDataFlags_HasSelection)
 
     ImGuiNavItemData()  { Clear(); }
-    void Clear()        { Window = NULL; ID = FocusScopeId = 0; InFlags = 0; DistBox = DistCenter = DistAxial = FLT_MAX; }
+    void Clear()        { Window = NULL; ID = FocusScopeId = 0; InFlags = 0; DistBox = DistCenter = DistAxial = FLT_MAX; HasSelectionData = false; }
 };
 
 //-----------------------------------------------------------------------------
@@ -1603,7 +1608,25 @@ struct ImGuiOldColumns
 //-----------------------------------------------------------------------------
 
 #ifdef IMGUI_HAS_MULTI_SELECT
-// <this is filled in 'range_select' branch>
+
+// Temporary storage for multi-select
+struct IMGUI_API ImGuiMultiSelectTempData
+{
+    ImGuiID                 FocusScopeId;           // Copied from g.CurrentFocusScopeId (unless another selection scope was pushed manually)
+    ImGuiMultiSelectFlags   Flags;
+    ImGuiKeyChord           KeyMods;
+    ImGuiWindow*            Window;
+    ImGuiMultiSelectIO      BeginIO;                // Requests are set and returned by BeginMultiSelect(), written to by user during the loop.
+    ImGuiMultiSelectIO      EndIO;                  // Requests are set during the loop and returned by EndMultiSelect().
+    bool                    IsFocused;              // Set if currently focusing the selection scope (any item of the selection). May be used if you have custom shortcut associated to selection.
+    bool                    IsSetRange;             // Set by BeginMultiSelect() when using Shift+Navigation. Because scrolling may be affected we can't afford a frame of lag with Shift+Navigation.
+    bool                    RangeDstPassedBy;       // Set by the item that matches NavJustMovedToId when IsSetRange is set.
+    //ImRect                Rect;                   // Extent of selection scope between BeginMultiSelect() / EndMultiSelect(), used by ImGuiMultiSelectFlags_ClearOnClickRectVoid.
+
+    ImGuiMultiSelectTempData()  { Clear(); }
+    void Clear()                { memset(this, 0, sizeof(*this)); }
+};
+
 #endif // #ifdef IMGUI_HAS_MULTI_SELECT
 
 //-----------------------------------------------------------------------------
@@ -2076,6 +2099,7 @@ struct ImGuiContext
     ImGuiID                 NavJustMovedToId;                   // Just navigated to this id (result of a successfully MoveRequest).
     ImGuiID                 NavJustMovedToFocusScopeId;         // Just navigated to this focus scope id (result of a successfully MoveRequest).
     ImGuiKeyChord           NavJustMovedToKeyMods;
+    bool                    NavJustMovedToHasSelectionData;     // " (FIXME-NAV: We should maybe just store ImGuiNavMoveResult)
     ImGuiID                 NavNextActivateId;                  // Set by ActivateItem(), queued until next frame.
     ImGuiActivateFlags      NavNextActivateFlags;
     ImGuiInputSource        NavInputSource;                     // Keyboard or Gamepad mode? THIS CAN ONLY BE ImGuiInputSource_Keyboard or ImGuiInputSource_Mouse
@@ -2160,6 +2184,10 @@ struct ImGuiContext
     ImPool<ImGuiTabBar>             TabBars;
     ImVector<ImGuiPtrOrIndex>       CurrentTabBarStack;
     ImVector<ImGuiShrinkWidthItem>  ShrinkWidthBuffer;
+
+    // Multi-Select state
+    ImGuiMultiSelectTempData*       CurrentMultiSelect;         // FIXME-MULTISELECT: We currently don't support recursing/stacking multi-select
+    ImGuiMultiSelectTempData        MultiSelectTempData[1];
 
     // Hover Delay system
     ImGuiID                 HoverItemDelayId;
@@ -2339,6 +2367,7 @@ struct ImGuiContext
         NavJustMovedToId = NavJustMovedToFocusScopeId = NavNextActivateId = 0;
         NavActivateFlags = NavNextActivateFlags = ImGuiActivateFlags_None;
         NavJustMovedToKeyMods = ImGuiMod_None;
+        NavJustMovedToHasSelectionData = false;
         NavInputSource = ImGuiInputSource_Keyboard;
         NavLayer = ImGuiNavLayer_Main;
         NavIdIsAlive = false;
@@ -2384,6 +2413,7 @@ struct ImGuiContext
         CurrentTable = NULL;
         TablesTempDataStacked = 0;
         CurrentTabBar = NULL;
+        CurrentMultiSelect = NULL;
 
         HoverItemDelayId = HoverItemDelayIdPreviousFrame = HoverItemUnlockedStationaryId = HoverWindowUnlockedStationaryId = 0;
         HoverItemDelayTimer = HoverItemDelayClearTimer = 0.0f;
@@ -3124,7 +3154,6 @@ namespace ImGui
     IMGUI_API ImVec2        CalcItemSize(ImVec2 size, float default_w, float default_h);
     IMGUI_API float         CalcWrapWidthForPos(const ImVec2& pos, float wrap_pos_x);
     IMGUI_API void          PushMultiItemsWidths(int components, float width_full);
-    IMGUI_API bool          IsItemToggledSelection();                                   // Was the last item selection toggled? (after Selectable(), TreeNode() etc. We only returns toggle _event_ in order to handle clipping correctly)
     IMGUI_API ImVec2        GetContentRegionMaxAbs();
     IMGUI_API void          ShrinkWidths(ImGuiShrinkWidthItem* items, int count, float width_excess);
 
@@ -3338,6 +3367,10 @@ namespace ImGui
     IMGUI_API void          ClearDragDrop();
     IMGUI_API bool          IsDragDropPayloadBeingAccepted();
     IMGUI_API void          RenderDragDropTargetRect(const ImRect& bb);
+
+    // Multi-Select API
+    IMGUI_API void          MultiSelectItemHeader(ImGuiID id, bool* p_selected);
+    IMGUI_API void          MultiSelectItemFooter(ImGuiID id, bool* p_selected, bool* p_pressed);
 
     // Internal Columns API (this is not exposed because we will encourage transitioning to the Tables API)
     IMGUI_API void          SetWindowClipRectBeforeSetChannel(ImGuiWindow* window, const ImRect& clip_rect);

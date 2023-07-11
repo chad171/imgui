@@ -57,6 +57,7 @@ Index of this file:
 // [SECTION] Demo Window / ShowDemoWindow()
 // - ShowDemoWindow()
 // - sub section: ShowDemoWindowWidgets()
+// - sub section: ShowDemoWindowMultiSelect()
 // - sub section: ShowDemoWindowLayout()
 // - sub section: ShowDemoWindowPopups()
 // - sub section: ShowDemoWindowTables()
@@ -200,6 +201,7 @@ static void ShowExampleMenuFile();
 // We split the contents of the big ShowDemoWindow() function into smaller functions
 // (because the link time of very large functions grow non-linearly)
 static void ShowDemoWindowWidgets();
+static void ShowDemoWindowMultiSelect();
 static void ShowDemoWindowLayout();
 static void ShowDemoWindowPopups();
 static void ShowDemoWindowTables();
@@ -247,6 +249,7 @@ void*                               GImGuiDemoMarkerCallbackUserData = NULL;
 //-----------------------------------------------------------------------------
 // - ShowDemoWindow()
 // - ShowDemoWindowWidgets()
+// - ShowDemoWindowMultiSelect()
 // - ShowDemoWindowLayout()
 // - ShowDemoWindowPopups()
 // - ShowDemoWindowTables()
@@ -618,9 +621,11 @@ void ImGui::ShowDemoWindow(bool* p_open)
     ImGui::End();
 }
 
+
 static void ShowDemoWindowWidgets()
 {
     IMGUI_DEMO_MARKER("Widgets");
+    //ImGui::SetNextItemOpen(true, ImGuiCond_Once);
     if (!ImGui::CollapsingHeader("Widgets"))
         return;
 
@@ -1310,6 +1315,7 @@ static void ShowDemoWindowWidgets()
     }
 
     IMGUI_DEMO_MARKER("Widgets/Selectables");
+    //ImGui::SetNextItemOpen(true, ImGuiCond_Once);
     if (ImGui::TreeNode("Selectables"))
     {
         // Selectable() has 2 overloads:
@@ -1331,37 +1337,6 @@ static void ShowDemoWindowWidgets()
             ImGui::TreePop();
         }
 
-        IMGUI_DEMO_MARKER("Widgets/Selectables/Single Selection");
-        if (ImGui::TreeNode("Selection State: Single Selection"))
-        {
-            static int selected = -1;
-            for (int n = 0; n < 5; n++)
-            {
-                char buf[32];
-                sprintf(buf, "Object %d", n);
-                if (ImGui::Selectable(buf, selected == n))
-                    selected = n;
-            }
-            ImGui::TreePop();
-        }
-        IMGUI_DEMO_MARKER("Widgets/Selectables/Multiple Selection");
-        if (ImGui::TreeNode("Selection State: Multiple Selection"))
-        {
-            HelpMarker("Hold CTRL and click to select multiple items.");
-            static bool selection[5] = { false, false, false, false, false };
-            for (int n = 0; n < 5; n++)
-            {
-                char buf[32];
-                sprintf(buf, "Object %d", n);
-                if (ImGui::Selectable(buf, selection[n]))
-                {
-                    if (!ImGui::GetIO().KeyCtrl)    // Clear selection when CTRL is not held
-                        memset(selection, 0, sizeof(selection));
-                    selection[n] ^= 1;
-                }
-            }
-            ImGui::TreePop();
-        }
         IMGUI_DEMO_MARKER("Widgets/Selectables/Rendering more items on the same line");
         if (ImGui::TreeNode("Rendering more items on the same line"))
         {
@@ -1468,6 +1443,8 @@ static void ShowDemoWindowWidgets()
         }
         ImGui::TreePop();
     }
+
+    ShowDemoWindowMultiSelect();
 
     // To wire InputText() with std::string or any other custom string type,
     // see the "Text Input > Resize Callback" section of this demo, and the misc/cpp/imgui_stdlib.h file.
@@ -2701,6 +2678,340 @@ static void ShowDemoWindowWidgets()
         for (int i = 0; i < IM_ARRAYSIZE(lines); i++)
             if (filter.PassFilter(lines[i]))
                 ImGui::BulletText("%s", lines[i]);
+        ImGui::TreePop();
+    }
+}
+
+// [Advanced] Helper class to simulate storage of a multi-selection state, used by the BeginMultiSelect() demos.
+// We use ImGuiStorage (simple key->value storage) to avoid external dependencies but it's probably not optimal.
+// To store a single-selection:
+// - You only need a single variable and don't need any of this!
+// To store a multi-selection, in your real application you could:
+// - Use intrusively stored selection (e.g. 'bool IsSelected' inside your object). This is by far the simplest
+//   way to store your selection data, but it means you cannot have multiple simultaneous views over your objects.
+//   This is what many of the simpler demos in this file are using (so they are not using this class).
+// - Use external storage: e.g. unordered_set/set/hash/map/interval trees (storing indices, objects id, etc.)
+//   are generally appropriate. Even a large array of bool might work for you...
+// - If you need to handle extremely large selections, it might be advantageous to support a "negative" mode in
+//   your storage, so "Select All" becomes "Negative=1 + Clear" and then sparse unselect can add to the storage.
+// About RefItem:
+// - The BeginMultiSelect() API requires you to store information about the reference/pivot item (generally the last clicked item).
+struct ExampleSelection
+{
+    // Data
+    ImGuiStorage                        Storage;        // Selection set
+    int                                 SelectionSize;  // Number of selected items (== number of 1 in the Storage, maintained by this class). // FIXME-MULTISELECT: Imply more difficult to track with intrusive selection schemes?
+    int                                 RangeRef;       // Reference/pivot item (generally last clicked item)
+
+    // Functions
+    ExampleSelection()                  { RangeRef = 0; Clear(); }
+    void Clear()                        { Storage.Clear(); SelectionSize = 0; }
+    bool GetSelected(int n) const       { return Storage.GetInt((ImGuiID)n, 0) != 0; }
+    void SetSelected(int n, bool v)     { int* p_int = Storage.GetIntRef((ImGuiID)n, 0); if (*p_int == (int)v) return; if (v) SelectionSize++; else SelectionSize--; *p_int = (bool)v; }
+    int  GetSize() const                { return SelectionSize; }
+
+    // When using SetRange() / SelectAll() we assume that our objects ID are indices.
+    // In this demo we always store selection using indices and never in another manner (e.g. object ID or pointers).
+    // If your selection system is storing selection using object ID and you want to support Shift+Click range-selection,
+    // you will need a way to iterate from one item to the other item given the ID you use.
+    // You are likely to need some kind of data structure to convert 'view index' <> 'object ID' (FIXME-MULTISELECT: Would be worth providing a demo of doing this).
+    // Note: This implementation of SetRange() is inefficient because it doesn't take advantage of the fact that ImGuiStorage stores sorted key.
+    void SetRange(int a, int b, bool v) { if (b < a) { int tmp = b; b = a; a = tmp; } for (int n = a; n <= b; n++) SetSelected(n, v); }
+    void SelectAll(int count)           { Storage.Data.resize(count); for (int idx = 0; idx < count; idx++) Storage.Data[idx] = ImGuiStorage::ImGuiStoragePair((ImGuiID)idx, 1); SelectionSize = count; } // This could be using SetRange(), but it this way is faster.
+
+    // Apply requests coming from BeginMultiSelect() and EndMultiSelect(). Must be done in this order! Order->SelectAll->SetRange.
+    void ApplyRequests(ImGuiMultiSelectIO* ms_io, int items_count)
+    {
+        if (ms_io->RequestClear)        { Clear(); }
+        if (ms_io->RequestSelectAll)    { SelectAll(items_count); }
+        if (ms_io->RequestSetRange)     { SetRange((int)(intptr_t)ms_io->RangeSrcItem, (int)(intptr_t)ms_io->RangeDstItem, ms_io->RangeSelected ? 1 : 0); }
+    }
+};
+
+static void ShowDemoWindowMultiSelect()
+{
+    IMGUI_DEMO_MARKER("Widgets/Selection State");
+    if (ImGui::TreeNode("Selection State"))
+    {
+        HelpMarker("Selections can be built under Selectable(), TreeNode() or other widgets. Selection state is owned by application code/data.");
+
+        IMGUI_DEMO_MARKER("Widgets/Selection State/Single Selection");
+        if (ImGui::TreeNode("Single Selection"))
+        {
+            static int selected = -1;
+            for (int n = 0; n < 5; n++)
+            {
+                char buf[32];
+                sprintf(buf, "Object %d", n);
+                if (ImGui::Selectable(buf, selected == n))
+                    selected = n;
+            }
+            ImGui::TreePop();
+        }
+
+        // Demonstrate implementation a most-basic form of multi-selection manually
+        IMGUI_DEMO_MARKER("Widgets/Selection State/Multiple Selection (basic, manual)");
+        if (ImGui::TreeNode("Multiple Selection (basic, manual)"))
+        {
+            HelpMarker("Hold CTRL and click to select multiple items.");
+            static bool selection[5] = { false, false, false, false, false };
+            for (int n = 0; n < 5; n++)
+            {
+                char buf[32];
+                sprintf(buf, "Object %d", n);
+                if (ImGui::Selectable(buf, selection[n]))
+                {
+                    if (!ImGui::GetIO().KeyCtrl) // Clear selection when CTRL is not held
+                        memset(selection, 0, sizeof(selection));
+                    selection[n] ^= 1; // Toggle current item
+                }
+            }
+            ImGui::TreePop();
+        }
+
+        const char* random_names[] =
+        {
+            "Artichoke", "Arugula", "Asparagus", "Avocado", "Bamboo Shoots", "Bean Sprouts", "Beans", "Beet", "Belgian Endive", "Bell Pepper",
+            "Bitter Gourd", "Bok Choy", "Broccoli", "Brussels Sprouts", "Burdock Root", "Cabbage", "Calabash", "Capers", "Carrot", "Cassava",
+            "Cauliflower", "Celery", "Celery Root", "Celcuce", "Chayote", "Celtuce", "Chayote", "Chinese Broccoli", "Corn", "Cucumber"
+        };
+
+        // Demonstrate holding/updating multi-selection data and using the BeginMultiSelect/EndMultiSelect API to support range-selection and clipping.
+        // SHIFT+Click w/ CTRL and other standard features are supported.
+        IMGUI_DEMO_MARKER("Widgets/Selection State/Multiple Selection (using BeginMultiSelect)");
+        //ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+        if (ImGui::TreeNode("Multiple Selection (using BeginMultiSelect)"))
+        {
+            static ExampleSelection selection;
+
+            ImGui::Text("Supported features:");
+            ImGui::BulletText("Keyboard navigation (arrows, page up/down, home/end, space).");
+            ImGui::BulletText("Ctrl modifier to preserve and toggle selection.");
+            ImGui::BulletText("Shift modifier for range selection.");
+            ImGui::BulletText("CTRL+A to select all.");
+
+            // The BeginListBox() has no actual purpose for selection logic (other that offering a scrolling region).
+            const int ITEMS_COUNT = 50;
+            ImGui::Text("Selection size: %d", selection.GetSize());
+            ImGui::Text("RangeRef: %d", selection.RangeRef);
+            if (ImGui::BeginListBox("##Basket", ImVec2(-FLT_MIN, ImGui::GetFontSize() * 20)))
+            {
+                ImGuiMultiSelectFlags flags = ImGuiMultiSelectFlags_ClearOnEscape;
+                ImGuiMultiSelectIO* ms_io = ImGui::BeginMultiSelect(flags, (void*)(intptr_t)selection.RangeRef, selection.GetSelected(selection.RangeRef));
+                selection.ApplyRequests(ms_io, ITEMS_COUNT);
+
+                for (int n = 0; n < ITEMS_COUNT; n++)
+                {
+                    char label[64];
+                    sprintf(label, "Object %05d: %s", n, random_names[n % IM_ARRAYSIZE(random_names)]);
+                    bool item_is_selected = selection.GetSelected(n);
+                    ImGui::SetNextItemSelectionData((void*)(intptr_t)n);
+                    ImGui::Selectable(label, item_is_selected);
+                }
+
+                // Apply multi-select requests
+                ms_io = ImGui::EndMultiSelect();
+                selection.RangeRef = (int)(intptr_t)ms_io->RangeSrcItem;
+                selection.ApplyRequests(ms_io, ITEMS_COUNT);
+
+                ImGui::EndListBox();
+            }
+
+            ImGui::TreePop();
+        }
+
+        // Demonstrate individual selection scopes in same window (no scrolling)
+        IMGUI_DEMO_MARKER("Widgets/Selection State/Multiple Selection (using BeginMultiSelect, multiple scopes)");
+        if (ImGui::TreeNode("Multiple Selection (using BeginMultiSelect, multiple scopes)"))
+        {
+            const int SCOPES_COUNT = 3;
+            const int ITEMS_COUNT = 8; // Per scope
+            static ExampleSelection selections_data[SCOPES_COUNT];
+
+            for (int selection_scope_n = 0; selection_scope_n < SCOPES_COUNT; selection_scope_n++)
+            {
+                ExampleSelection* selection = &selections_data[selection_scope_n];
+                ImGui::SeparatorText("Selection scope");
+                ImGui::Text("Selection size: %d/%d", selection->GetSize(), ITEMS_COUNT);
+                ImGui::PushID(selection_scope_n);
+
+                ImGuiMultiSelectFlags flags = ImGuiMultiSelectFlags_ClearOnEscape; // | ImGuiMultiSelectFlags_ClearOnClickRectVoid
+                ImGuiMultiSelectIO* ms_io = ImGui::BeginMultiSelect(flags, (void*)(intptr_t)selection->RangeRef, selection->GetSelected(selection->RangeRef));
+                selection->ApplyRequests(ms_io, ITEMS_COUNT);
+
+                for (int n = 0; n < ITEMS_COUNT; n++)
+                {
+                    char label[64];
+                    sprintf(label, "Object %05d: %s", n, random_names[n % IM_ARRAYSIZE(random_names)]);
+                    bool item_is_selected = selection->GetSelected(n);
+                    ImGui::SetNextItemSelectionData((void*)(intptr_t)n);
+                    ImGui::Selectable(label, item_is_selected);
+                }
+
+                // Apply multi-select requests
+                ms_io = ImGui::EndMultiSelect();
+                selection->RangeRef = (int)(intptr_t)ms_io->RangeSrcItem;
+                selection->ApplyRequests(ms_io, ITEMS_COUNT);
+                ImGui::PopID();
+            }
+            ImGui::TreePop();
+        }
+
+        // Advanced demonstration of BeginMultiSelect()
+        // - Showcase clipping.
+        // - Showcase basic drag and drop.
+        // - Showcase TreeNode variant (note that tree node don't expand in the demo: supporting expanding tree nodes + clipping a separate thing).
+        // - Showcase using inside a table.
+        IMGUI_DEMO_MARKER("Widgets/Selection State/Multiple Selection (using BeginMultiSelect, advanced)");
+        //ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+        if (ImGui::TreeNode("Multiple Selection (using BeginMultiSelect, advanced)"))
+        {
+            // Options
+            enum WidgetType { WidgetType_Selectable, WidgetType_TreeNode };
+            static bool use_clipper = true;
+            static bool use_drag_drop = true;
+            static bool show_in_table = false;
+            static bool show_color_button = false;
+            static ImGuiMultiSelectFlags flags = ImGuiMultiSelectFlags_None;
+            static WidgetType widget_type = WidgetType_Selectable;
+
+            if (ImGui::RadioButton("Selectables", widget_type == WidgetType_Selectable)) { widget_type = WidgetType_Selectable; }
+            ImGui::SameLine();
+            if (ImGui::RadioButton("Tree nodes", widget_type == WidgetType_TreeNode)) { widget_type = WidgetType_TreeNode; }
+            ImGui::Checkbox("Enable clipper", &use_clipper);
+            ImGui::Checkbox("Enable drag & drop", &use_drag_drop);
+            ImGui::Checkbox("Show in a table", &show_in_table);
+            ImGui::Checkbox("Show color button", &show_color_button);
+            ImGui::CheckboxFlags("ImGuiMultiSelectFlags_NoMultiSelect", &flags, ImGuiMultiSelectFlags_NoMultiSelect);
+            ImGui::CheckboxFlags("ImGuiMultiSelectFlags_NoSelectAll", &flags, ImGuiMultiSelectFlags_NoSelectAll);
+            ImGui::CheckboxFlags("ImGuiMultiSelectFlags_ClearOnEscape", &flags, ImGuiMultiSelectFlags_ClearOnEscape);
+            ImGui::CheckboxFlags("ImGuiMultiSelectFlags_ClearOnClickWindowVoid", &flags, ImGuiMultiSelectFlags_ClearOnClickWindowVoid);
+
+            const int ITEMS_COUNT = 1000;
+            static ExampleSelection selection;
+
+            ImGui::Text("Selection size: %d/%d", selection.GetSize(), ITEMS_COUNT);
+            if (ImGui::BeginListBox("##Basket", ImVec2(-FLT_MIN, ImGui::GetFontSize() * 20)))
+            {
+                ImVec2 color_button_sz(ImGui::GetFontSize(), ImGui::GetFontSize());
+                if (widget_type == WidgetType_TreeNode)
+                    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ImGui::GetStyle().ItemSpacing.x, 0.0f));
+
+                ImGuiMultiSelectIO* ms_io = ImGui::BeginMultiSelect(flags, (void*)(intptr_t)selection.RangeRef, selection.GetSelected(selection.RangeRef));
+                selection.ApplyRequests(ms_io, ITEMS_COUNT);
+
+                if (show_in_table)
+                {
+                    if (widget_type == WidgetType_TreeNode)
+                        ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(0.0f, 0.0f));
+                    ImGui::BeginTable("##Split", 2, ImGuiTableFlags_Resizable | ImGuiTableFlags_NoSavedSettings | ImGuiTableFlags_NoPadOuterX);
+                    ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthStretch, 0.70f);
+                    ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthStretch, 0.30f);
+                    //ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ImGui::GetStyle().ItemSpacing.x, 0.0f));
+                }
+
+                ImGuiListClipper clipper;
+                if (use_clipper)
+                    clipper.Begin(ITEMS_COUNT);
+
+                while (!use_clipper || clipper.Step())
+                {
+                    // IF clipping is used you need to set 'RangeSrcPassedBy = true' if RangeSrcItem was passed over.
+                    if (use_clipper)
+                        if ((int)(intptr_t)ms_io->RangeSrcItem <= clipper.DisplayStart)
+                            ms_io->RangeSrcPassedBy = true;
+
+                    const int item_begin = use_clipper ? clipper.DisplayStart : 0;
+                    const int item_end = use_clipper ? clipper.DisplayEnd : ITEMS_COUNT;
+                    for (int n = item_begin; n < item_end; n++)
+                    {
+                        if (show_in_table)
+                            ImGui::TableNextColumn();
+
+                        ImGui::PushID(n);
+                        const char* category = random_names[n % IM_ARRAYSIZE(random_names)];
+                        char label[64];
+                        sprintf(label, "Object %05d: %s", n, category);
+
+                        // Emit a color button, to test that Shift+LeftArrow landing on an item that is not part
+                        // of the selection scope doesn't erroneously alter our selection (FIXME-TESTS: Add a test for that!).
+                        if (show_color_button)
+                        {
+                            ImU32 dummy_col = (ImU32)((unsigned int)n * 0xC250B74B) | IM_COL32_A_MASK;
+                            ImGui::ColorButton("##", ImColor(dummy_col), ImGuiColorEditFlags_NoTooltip, color_button_sz);
+                            ImGui::SameLine();
+                        }
+
+                        bool item_is_selected = selection.GetSelected(n);
+                        ImGui::SetNextItemSelectionData((void*)(intptr_t)n);
+                        if (widget_type == WidgetType_Selectable)
+                        {
+                            ImGui::Selectable(label, item_is_selected);
+                            if (use_drag_drop && ImGui::BeginDragDropSource())
+                            {
+                                ImGui::Text("(Dragging %d items)", selection.GetSize());
+                                ImGui::EndDragDropSource();
+                            }
+                        }
+                        else if (widget_type == WidgetType_TreeNode)
+                        {
+                            ImGuiTreeNodeFlags tree_node_flags = ImGuiTreeNodeFlags_SpanAvailWidth;
+                            tree_node_flags |= ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_OpenOnDoubleClick;
+                            if (item_is_selected)
+                                tree_node_flags |= ImGuiTreeNodeFlags_Selected;
+                            bool open = ImGui::TreeNodeEx(label, tree_node_flags);
+                            if (use_drag_drop && ImGui::BeginDragDropSource())
+                            {
+                                ImGui::Text("(Dragging %d items)", selection.GetSize());
+                                ImGui::EndDragDropSource();
+                            }
+                            if (open)
+                                ImGui::TreePop();
+                        }
+
+                        // Right-click: context menu
+                        if (ImGui::BeginPopupContextItem())
+                        {
+                            ImGui::Text("(Testing Selectable inside an embedded popup)");
+                            ImGui::Selectable("Close");
+                            ImGui::EndPopup();
+                        }
+
+                        // Demo content within a table
+                        if (show_in_table)
+                        {
+                            ImGui::TableNextColumn();
+                            ImGui::SetNextItemWidth(-FLT_MIN);
+                            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 0));
+                            ImGui::InputText("###NoLabel", (char*)(void*)category, strlen(category), ImGuiInputTextFlags_ReadOnly);
+                            ImGui::PopStyleVar();
+                        }
+
+                        ImGui::PopID();
+                    }
+                    if (!use_clipper)
+                        break;
+                }
+
+                if (show_in_table)
+                {
+                    ImGui::EndTable();
+                    if (widget_type == WidgetType_TreeNode)
+                        ImGui::PopStyleVar();
+                }
+
+                // Apply multi-select requests
+                ms_io = ImGui::EndMultiSelect();
+                selection.RangeRef = (int)(intptr_t)ms_io->RangeSrcItem;
+                selection.ApplyRequests(ms_io, ITEMS_COUNT);
+
+                if (widget_type == WidgetType_TreeNode)
+                    ImGui::PopStyleVar();
+                ImGui::EndListBox();
+            }
+
+            ImGui::TreePop();
+        }
         ImGui::TreePop();
     }
 }
