@@ -24,11 +24,29 @@
 #ifdef __EMSCRIPTEN__
 #include "../libs/emscripten/emscripten_mainloop_stub.h"
 #endif
+#include <string>
 
 static void glfw_error_callback(int error, const char* description)
 {
     fprintf(stderr, "GLFW Error %d: %s\n", error, description);
 }
+
+
+static void ManyWindowsForTestingDocking()
+{
+    for (int i = 0; i < 3; i++)
+    {
+        ImGui::Begin((std::string("Dockable Test")+std::to_string(i + 1)).c_str());
+        ImGui::Text("Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore \n"
+            "et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut \n"
+            "aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse \n"
+            "cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa \n"
+            "qui officia deserunt mollit anim id est laborum");
+        ImGui::End();
+    }
+}
+
+
 
 // Main code
 int main(int, char**)
@@ -141,6 +159,8 @@ int main(int, char**)
         // 1. Show the big demo window (Most of the sample code is in ImGui::ShowDemoWindow()! You can browse its code to learn more about Dear ImGui!).
         if (show_demo_window)
             ImGui::ShowDemoWindow(&show_demo_window);
+
+        ManyWindowsForTestingDocking();
 
         // 2. Show a simple window that we create ourselves. We use a Begin/End pair to create a named window.
         {
