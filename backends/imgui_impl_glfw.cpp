@@ -1012,6 +1012,18 @@ static void ImGui_ImplGlfw_WindowSizeCallback(GLFWwindow* window, int, int)
     }
 }
 
+static ImGuiViewport* ImGui_ImplGlfw_GetParentViewport(ImGuiViewport const& viewport)
+{
+    return viewport.ParentViewportId ? ImGui::FindViewportByID(viewport.ParentViewportId) : nullptr;
+}
+
+static void ImGui_ImplGlfw_AddParentToView(ImGuiViewport const& viewport, ImGuiViewport const& parent_viewport)
+{
+#ifdef _WIN32
+    ::SetWindowLongPtr((HWND)viewport.PlatformHandleRaw, GWLP_HWNDPARENT, (LONG_PTR)parent_viewport.PlatformHandleRaw);
+#endif
+}
+
 static void ImGui_ImplGlfw_CreateWindow(ImGuiViewport* viewport)
 {
     ImGui_ImplGlfw_Data* bd = ImGui_ImplGlfw_GetBackendData();
@@ -1039,6 +1051,9 @@ static void ImGui_ImplGlfw_CreateWindow(ImGuiViewport* viewport)
     viewport->PlatformHandleRaw = (void*)glfwGetCocoaWindow(vd->Window);
 #endif
     glfwSetWindowPos(vd->Window, (int)viewport->Pos.x, (int)viewport->Pos.y);
+
+    if (ImGuiViewport* parent_viewport = ImGui_ImplGlfw_GetParentViewport(*viewport))
+        ImGui_ImplGlfw_AddParentToView(*viewport, *parent_viewport);
 
     // Install GLFW callbacks for secondary viewports
     glfwSetWindowFocusCallback(vd->Window, ImGui_ImplGlfw_WindowFocusCallback);
